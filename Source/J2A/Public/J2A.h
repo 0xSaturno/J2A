@@ -13,4 +13,5 @@ public:
 private:
 	void RegisterMenus();
 	void OnImportJsonClicked();
+	void OnUpdateAssetClicked();
 };

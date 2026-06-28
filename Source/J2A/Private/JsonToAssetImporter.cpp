@@ -29,6 +29,49 @@ namespace J2ANotifs
 }
 
 
+bool FJsonToAssetImporter::UpdateExistingAssetFromJson(UObject* ExistingAsset, const FString& JsonString)
+{
+	TSharedPtr<FJsonValue> JsonValue;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+
+	if (!FJsonSerializer::Deserialize(Reader, JsonValue) || !JsonValue.IsValid())
+	{
+		return false;
+	}
+
+	TSharedPtr<FJsonObject> RootObject = nullptr;
+	if (JsonValue->Type == EJson::Array)
+	{
+		auto JsonArray = JsonValue->AsArray();
+		if (JsonArray.Num() > 0 && JsonArray[0]->Type == EJson::Object)
+		{
+			RootObject = JsonArray[0]->AsObject();
+		}
+	}
+	else if (JsonValue->Type == EJson::Object)
+	{
+		RootObject = JsonValue->AsObject();
+	}
+
+	if (!RootObject.IsValid() || !ExistingAsset)
+	{
+		return false;
+	}
+
+	if (UMaterialInstanceConstant* ExistingMI = Cast<UMaterialInstanceConstant>(ExistingAsset))
+	{
+		ImportMaterialInstance(RootObject, nullptr, NAME_None, RF_NoFlags, ExistingMI);
+		return true;
+	}
+	else if (UMaterial* ExistingMat = Cast<UMaterial>(ExistingAsset))
+	{
+		ImportMasterMaterial(RootObject, nullptr, NAME_None, RF_NoFlags, ExistingMat);
+		return true;
+	}
+
+	return false;
+}
+
 UObject* FJsonToAssetImporter::ImportJsonToAsset(const FString& JsonString, UObject* InParent, FName InName, EObjectFlags Flags)
 {
 	TSharedPtr<FJsonValue> JsonValue;
@@ -146,10 +189,14 @@ UObject* FJsonToAssetImporter::ImportDataTable(TSharedPtr<FJsonObject> JsonObjec
 	return NewDT;
 }
 
-UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags)
+UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags, UMaterialInstanceConstant* ExistingMI)
 {
-	UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
-	UMaterialInstanceConstant* NewMI = Cast<UMaterialInstanceConstant>(Factory->FactoryCreateNew(UMaterialInstanceConstant::StaticClass(), InParent, InName, Flags, nullptr, GWarn));
+	UMaterialInstanceConstant* NewMI = ExistingMI;
+	if (!NewMI)
+	{
+		UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
+		NewMI = Cast<UMaterialInstanceConstant>(Factory->FactoryCreateNew(UMaterialInstanceConstant::StaticClass(), InParent, InName, Flags, nullptr, GWarn));
+	}
 
 	auto Props = JsonObject->GetObjectField(TEXT("Properties"));
 	if (Props.IsValid())
@@ -280,9 +327,13 @@ UObject* FJsonToAssetImporter::ImportDataAsset(TSharedPtr<FJsonObject> JsonObjec
 	return NewAsset;
 }
 
-UObject* FJsonToAssetImporter::ImportMasterMaterial(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags)
+UObject* FJsonToAssetImporter::ImportMasterMaterial(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags, UMaterial* ExistingMat)
 {
-	UMaterial* NewMat = NewObject<UMaterial>(InParent, UMaterial::StaticClass(), InName, Flags);
+	UMaterial* NewMat = ExistingMat;
+	if (!NewMat)
+	{
+		NewMat = NewObject<UMaterial>(InParent, UMaterial::StaticClass(), InName, Flags);
+	}
 	
 	auto Props = JsonObject->GetObjectField(TEXT("Properties"));
 	

@@ -1,6 +1,7 @@
 Binaries/
 Intermediate/
 Saved/
+RELEASE/
 .vs/
 *.sln
 *.suo

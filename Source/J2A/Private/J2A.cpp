@@ -38,6 +38,32 @@ void FJ2AModule::RegisterMenus()
 			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnImportJsonClicked))
 		);
 	}
+
+	UToolMenu* MatMenu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.Material");
+	if (MatMenu)
+	{
+		FToolMenuSection& Section = MatMenu->AddSection("J2AActions", LOCTEXT("J2ASection", "JSON 2 Asset"));
+		Section.AddMenuEntry(
+			"UpdateFromFModelJson",
+			LOCTEXT("UpdateFromFModelJson_Label", "Update from JSON..."),
+			LOCTEXT("UpdateFromFModelJson_Tooltip", "Update this asset using data from an FModel JSON."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnUpdateAssetClicked))
+		);
+	}
+
+	UToolMenu* MIMenu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.MaterialInstanceConstant");
+	if (MIMenu)
+	{
+		FToolMenuSection& Section = MIMenu->AddSection("J2AActions", LOCTEXT("J2ASection", "JSON 2 Asset"));
+		Section.AddMenuEntry(
+			"UpdateFromFModelJson",
+			LOCTEXT("UpdateFromFModelJson_Label", "Update from JSON..."),
+			LOCTEXT("UpdateFromFModelJson_Tooltip", "Update this asset using data from an FModel JSON."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnUpdateAssetClicked))
+		);
+	}
 }
 
 void FJ2AModule::OnImportJsonClicked()
@@ -89,6 +115,52 @@ void FJ2AModule::OnImportJsonClicked()
 					{
 						FAssetRegistryModule::AssetCreated(NewAsset);
 						NewAsset->MarkPackageDirty();
+					}
+				}
+			}
+		}
+	}
+}
+
+void FJ2AModule::OnUpdateAssetClicked()
+{
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FAssetData> SelectedAssets;
+	ContentBrowserModule.Get().GetSelectedAssets(SelectedAssets);
+
+	if (SelectedAssets.Num() == 0) return;
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (DesktopPlatform)
+	{
+		TArray<FString> OutFilenames;
+		const void* ParentWindowWindowHandle = FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr);
+
+		bool bOpened = DesktopPlatform->OpenFileDialog(
+			ParentWindowWindowHandle,
+			TEXT("Select FModel JSON File"),
+			TEXT(""),
+			TEXT(""),
+			TEXT("JSON Files (*.json)|*.json"),
+			EFileDialogFlags::None,
+			OutFilenames
+		);
+
+		if (bOpened && OutFilenames.Num() > 0)
+		{
+			FString FileContent;
+			if (FFileHelper::LoadFileToString(FileContent, *OutFilenames[0]))
+			{
+				for (const FAssetData& AssetData : SelectedAssets)
+				{
+					UObject* Asset = AssetData.GetAsset();
+					if (Asset)
+					{
+						if (FJsonToAssetImporter::UpdateExistingAssetFromJson(Asset, FileContent))
+						{
+							FAssetRegistryModule::AssetCreated(Asset);
+							Asset->MarkPackageDirty();
+						}
 					}
 				}
 			}
