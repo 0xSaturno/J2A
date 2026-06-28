@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "J2A",
+	"Description": "FModel JSON to Unreal Asset Importer",
+	"Category": "Modding",
+	"CreatedBy": "Saturn",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "J2A",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
