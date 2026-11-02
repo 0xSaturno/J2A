@@ -4,6 +4,7 @@
 
 class UMaterialInstanceConstant;
 class UMaterial;
+class UMaterialInterface;
 class UTexture2D;
 
 class J2A_API FJsonToAssetImporter
@@ -18,6 +19,19 @@ public:
 	 * Parses an FModel JSON string and generates the appropriate UObject.
 	 */
 	static UObject* ImportJsonToAsset(const FString& JsonString, UObject* InParent, FName InName, EObjectFlags Flags);
+
+	/**
+	 * Refreshes every Material Instance using this material or instance as its parent, including
+	 * instances still parented to a dummy saved under the folder's name by older J2A versions.
+	 * Returns the number of instances updated.
+	 */
+	static int32 RefreshInstancesOfMaterial(UMaterialInterface* Parent, bool bNotifyIfNone = true);
+
+	/**
+	 * Moves an instance from a misplaced dummy parent onto the real parent if it has been
+	 * imported, then refreshes the instance. Returns true if it was refreshed.
+	 */
+	static bool RelinkInstanceParent(UMaterialInstanceConstant* Instance);
 
 private:
 	// Specific asset importers

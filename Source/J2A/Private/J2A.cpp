@@ -8,6 +8,8 @@
 #include "Misc/FileHelper.h"
 #include "JsonToAssetImporter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstanceConstant.h"
 
 #define LOCTEXT_NAMESPACE "FJ2AModule"
 
@@ -50,6 +52,13 @@ void FJ2AModule::RegisterMenus()
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnUpdateAssetClicked))
 		);
+		Section.AddMenuEntry(
+			"RefreshMaterialInstances",
+			LOCTEXT("RefreshMaterialInstances_Label", "Refresh Instances"),
+			LOCTEXT("RefreshMaterialInstances_Tooltip", "Update every instance of this material, relinking any stuck on a misplaced dummy parent."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnRefreshInstancesClicked))
+		);
 	}
 
 	UToolMenu* MIMenu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.MaterialInstanceConstant");
@@ -62,6 +71,20 @@ void FJ2AModule::RegisterMenus()
 			LOCTEXT("UpdateFromFModelJson_Tooltip", "Update this asset using data from an FModel JSON."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnUpdateAssetClicked))
+		);
+		Section.AddMenuEntry(
+			"ReloadMaterialInstance",
+			LOCTEXT("ReloadMaterialInstance_Label", "Reload Material"),
+			LOCTEXT("ReloadMaterialInstance_Tooltip", "Relink this instance to its real parent material, if imported, and refresh its parameters."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnReloadInstanceClicked))
+		);
+		Section.AddMenuEntry(
+			"RefreshMaterialInstances",
+			LOCTEXT("RefreshMaterialInstances_Label", "Refresh Instances"),
+			LOCTEXT("RefreshChildInstances_Tooltip", "Update every instance using this instance as its parent, relinking any stuck on a misplaced dummy parent."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateRaw(this, &FJ2AModule::OnRefreshInstancesClicked))
 		);
 	}
 }
@@ -168,6 +191,30 @@ void FJ2AModule::OnUpdateAssetClicked()
 	}
 }
 
+void FJ2AModule::OnRefreshInstancesClicked()
+{
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FAssetData> SelectedAssets;
+	ContentBrowserModule.Get().GetSelectedAssets(SelectedAssets);
+
+	for (const FAssetData& AssetData : SelectedAssets)
+	{
+		FJsonToAssetImporter::RefreshInstancesOfMaterial(Cast<UMaterialInterface>(AssetData.GetAsset()));
+	}
+}
+
+void FJ2AModule::OnReloadInstanceClicked()
+{
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FAssetData> SelectedAssets;
+	ContentBrowserModule.Get().GetSelectedAssets(SelectedAssets);
+
+	for (const FAssetData& AssetData : SelectedAssets)
+	{
+		FJsonToAssetImporter::RelinkInstanceParent(Cast<UMaterialInstanceConstant>(AssetData.GetAsset()));
+	}
+}
+
 #undef LOCTEXT_NAMESPACE
-	
+
 IMPLEMENT_MODULE(FJ2AModule, J2A)

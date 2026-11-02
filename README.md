@@ -37,6 +37,15 @@ With a focus on preserving hierarchies and visual data, it automates the tedious
 2. Select `JSON 2 Asset -> Import FModel JSON...`
 3. Select your `.json` file(s) from the dialog box.
 
+**Fixing instances after importing a Master Material**
+
+Importing a Master Material JSON updates the existing dummy in place and refreshes its instances automatically. To repair instances without re-importing, right-click:
+
+- A Master Material and select `Refresh Instances` to update all of its instances.
+- A Material Instance and select `Reload Material` to update just that instance.
+
+Both also move instances off dummy masters that older J2A versions saved under the folder's name (for example `Materials.uasset`). Those leftover dummies can be deleted afterwards.
+
 ## Acknowledgments
 
 This C++ plugin is a native, optimized port of the **[JSON2DA](https://github.com/peek6/Json2DA/tree/tekken8)** Python script toolset.

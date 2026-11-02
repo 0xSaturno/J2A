@@ -14,4 +14,6 @@ private:
 	void RegisterMenus();
 	void OnImportJsonClicked();
 	void OnUpdateAssetClicked();
+	void OnRefreshInstancesClicked();
+	void OnReloadInstanceClicked();
 };
