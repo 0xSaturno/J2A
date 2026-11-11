@@ -1,6 +1,6 @@
 #include "JsonToAssetImporter.h"
 #include "Serialization/JsonSerializer.h"
-#include "Misc/MessageDialog.h"
+#include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
 #include "Engine/Texture2D.h"
 #include "Engine/UserDefinedStruct.h"
@@ -35,32 +35,79 @@ namespace J2ANotifs
 }
 
 
-bool FJsonToAssetImporter::UpdateExistingAssetFromJson(UObject* ExistingAsset, const FString& JsonString)
+// J2A dummies hold only parameters, the Adds chaining them and a constant. Anything else is a hand-built material we must not touch
+static bool IsDummyMaster(const UMaterial* Material)
+{
+	for (const UMaterialExpression* Expression : Material->GetExpressions())
+	{
+		if (Expression && !Expression->HasAParameterName() && !Expression->IsA<UMaterialExpressionAdd>() && !Expression->IsA<UMaterialExpressionConstant>())
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+TSharedPtr<FJsonObject> FJsonToAssetImporter::ParseRootObject(const FString& JsonString)
 {
 	TSharedPtr<FJsonValue> JsonValue;
 	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-
 	if (!FJsonSerializer::Deserialize(Reader, JsonValue) || !JsonValue.IsValid())
+	{
+		return nullptr;
+	}
+
+	// FModel exports a list of objects, the asset itself comes first
+	if (JsonValue->Type == EJson::Array)
+	{
+		const TArray<TSharedPtr<FJsonValue>>& JsonArray = JsonValue->AsArray();
+		return (JsonArray.Num() > 0 && JsonArray[0]->Type == EJson::Object) ? JsonArray[0]->AsObject() : nullptr;
+	}
+	return JsonValue->Type == EJson::Object ? JsonValue->AsObject() : nullptr;
+}
+
+UClass* FJsonToAssetImporter::ResolveAssetClass(const FString& AssetType)
+{
+	if (AssetType == TEXT("DataTable"))
+	{
+		return UDataTable::StaticClass();
+	}
+	if (AssetType == TEXT("MaterialInstanceConstant"))
+	{
+		return UMaterialInstanceConstant::StaticClass();
+	}
+	if (AssetType == TEXT("Material"))
+	{
+		return UMaterial::StaticClass();
+	}
+
+	// Anything else must be a DataAsset: building other classes from JSON (meshes, textures, blueprints) leaves a hollow asset that can crash the editor
+	UClass* AssetClass = AssetType.IsEmpty() ? nullptr : FindFirstObject<UClass>(*AssetType, EFindFirstObjectOptions::NativeFirst);
+	return (AssetClass && AssetClass->IsChildOf(UDataAsset::StaticClass()) && !AssetClass->HasAnyClassFlags(CLASS_Abstract)) ? AssetClass : nullptr;
+}
+
+bool FJsonToAssetImporter::CanImportJson(const FString& JsonString)
+{
+	const TSharedPtr<FJsonObject> RootObject = ParseRootObject(JsonString);
+	FString AssetType;
+	return RootObject.IsValid() && RootObject->TryGetStringField(TEXT("Type"), AssetType) && ResolveAssetClass(AssetType) != nullptr;
+}
+
+bool FJsonToAssetImporter::UpdateExistingAssetFromJson(UObject* ExistingAsset, const FString& JsonString)
+{
+	const TSharedPtr<FJsonObject> RootObject = ParseRootObject(JsonString);
+
+	if (!RootObject.IsValid() || !ExistingAsset)
 	{
 		return false;
 	}
 
-	TSharedPtr<FJsonObject> RootObject = nullptr;
-	if (JsonValue->Type == EJson::Array)
+	// The wrong kind of JSON would rebuild the asset from unrelated data, e.g. wipe a master's graph
+	FString JsonType;
+	RootObject->TryGetStringField(TEXT("Type"), JsonType);
+	if (JsonType != ExistingAsset->GetClass()->GetName())
 	{
-		auto JsonArray = JsonValue->AsArray();
-		if (JsonArray.Num() > 0 && JsonArray[0]->Type == EJson::Object)
-		{
-			RootObject = JsonArray[0]->AsObject();
-		}
-	}
-	else if (JsonValue->Type == EJson::Object)
-	{
-		RootObject = JsonValue->AsObject();
-	}
-
-	if (!RootObject.IsValid() || !ExistingAsset)
-	{
+		J2ANotifs::ShowNotification(FString::Printf(TEXT("Update from JSON: skipped '%s', the JSON is a '%s'"), *ExistingAsset->GetName(), *JsonType));
 		return false;
 	}
 
@@ -80,58 +127,45 @@ bool FJsonToAssetImporter::UpdateExistingAssetFromJson(UObject* ExistingAsset, c
 
 UObject* FJsonToAssetImporter::ImportJsonToAsset(const FString& JsonString, UObject* InParent, FName InName, EObjectFlags Flags)
 {
-	TSharedPtr<FJsonValue> JsonValue;
-	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-
-	if (!FJsonSerializer::Deserialize(Reader, JsonValue) || !JsonValue.IsValid())
-	{
-		UE_LOG(LogTemp, Error, TEXT("J2A: Failed to parse JSON string."));
-		return nullptr;
-	}
-
-	TSharedPtr<FJsonObject> RootObject = nullptr;
-
-	if (JsonValue->Type == EJson::Array)
-	{
-		auto JsonArray = JsonValue->AsArray();
-		if (JsonArray.Num() > 0 && JsonArray[0]->Type == EJson::Object)
-		{
-			RootObject = JsonArray[0]->AsObject();
-		}
-	}
-	else if (JsonValue->Type == EJson::Object)
-	{
-		RootObject = JsonValue->AsObject();
-	}
-
+	const TSharedPtr<FJsonObject> RootObject = ParseRootObject(JsonString);
 	if (!RootObject.IsValid())
 	{
-		UE_LOG(LogTemp, Error, TEXT("J2A: JSON root is not a valid object."));
+		UE_LOG(LogTemp, Error, TEXT("J2A: Failed to parse JSON, or its root is not an object."));
 		return nullptr;
 	}
 
 	FString AssetType;
-	if (!RootObject->TryGetStringField(TEXT("Type"), AssetType))
+	RootObject->TryGetStringField(TEXT("Type"), AssetType);
+	UClass* AssetClass = ResolveAssetClass(AssetType);
+	if (!AssetClass)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("J2A: Missing 'Type' field in JSON. Treating as DataAsset."));
-		AssetType = TEXT("DataAsset");
+		UE_LOG(LogTemp, Error, TEXT("J2A: '%s' is not a supported type or a loaded DataAsset class."), *AssetType);
+		return nullptr;
 	}
 
-	if (AssetType == TEXT("DataTable"))
+	// NewObject is fatal when the name is already taken by an asset of another class
+	UObject* Existing = StaticFindObject(nullptr, InParent, *InName.ToString());
+	if (Existing && !Existing->IsA(AssetClass))
+	{
+		J2ANotifs::ShowNotification(FString::Printf(TEXT("Import: skipped '%s', it already exists here as a %s"), *InName.ToString(), *Existing->GetClass()->GetName()));
+		return nullptr;
+	}
+
+	if (AssetClass == UDataTable::StaticClass())
 	{
 		return ImportDataTable(RootObject, InParent, InName, Flags);
 	}
-	else if (AssetType == TEXT("MaterialInstanceConstant"))
+	else if (AssetClass == UMaterialInstanceConstant::StaticClass())
 	{
 		return ImportMaterialInstance(RootObject, InParent, InName, Flags);
 	}
-	else if (AssetType == TEXT("Material"))
+	else if (AssetClass == UMaterial::StaticClass())
 	{
 		return ImportMasterMaterial(RootObject, InParent, InName, Flags);
 	}
 	else
 	{
-		return ImportDataAsset(RootObject, InParent, InName, Flags);
+		return ImportDataAsset(RootObject, AssetClass, InParent, InName, Flags);
 	}
 }
 
@@ -154,7 +188,7 @@ UObject* FJsonToAssetImporter::ImportDataTable(TSharedPtr<FJsonObject> JsonObjec
 	UScriptStruct* RowStruct = nullptr;
 	if (!StructName.IsEmpty())
 	{
-		RowStruct = FindObject<UScriptStruct>(ANY_PACKAGE, *StructName);
+		RowStruct = FindFirstObject<UScriptStruct>(*StructName, EFindFirstObjectOptions::NativeFirst);
 		if (!RowStruct)
 		{
 			FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -181,15 +215,39 @@ UObject* FJsonToAssetImporter::ImportDataTable(TSharedPtr<FJsonObject> JsonObjec
 	UDataTable* NewDT = NewObject<UDataTable>(InParent, UDataTable::StaticClass(), InName, Flags);
 	NewDT->RowStruct = RowStruct;
 
-	auto RowsObj = JsonObject->GetObjectField(TEXT("Rows"));
-	if (RowsObj.IsValid())
+	const TSharedPtr<FJsonObject>* RowsObj;
+	if (JsonObject->TryGetObjectField(TEXT("Rows"), RowsObj))
 	{
+		// FModel keys rows by name, Unreal wants a list of rows that each carry their name.
+		// A private key field keeps row structs with their own "Name" column intact.
+		const FString KeyField = TEXT("J2ARowName");
+		TArray<TSharedPtr<FJsonValue>> RowList;
+		for (const auto& Row : (*RowsObj)->Values)
+		{
+			const TSharedPtr<FJsonObject>* RowObj;
+			if (Row.Value.IsValid() && Row.Value->TryGetObject(RowObj))
+			{
+				(*RowObj)->SetStringField(KeyField, Row.Key);
+				RowList.Add(Row.Value);
+			}
+		}
+
 		FString RowsJson;
 		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RowsJson);
-		FJsonSerializer::Serialize(RowsObj.ToSharedRef(), Writer);
+		FJsonSerializer::Serialize(RowList, Writer);
 
-		TArray<FString> Problems;
-		NewDT->CreateTableFromJSONString(RowsJson);
+		NewDT->ImportKeyField = KeyField;
+		const TArray<FString> Problems = NewDT->CreateTableFromJSONString(RowsJson);
+		NewDT->ImportKeyField.Empty();
+
+		for (const FString& Problem : Problems)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("J2A: DataTable %s: %s"), *InName.ToString(), *Problem);
+		}
+		if (Problems.Num() > 0)
+		{
+			J2ANotifs::ShowNotification(FString::Printf(TEXT("DataTable: '%s' imported with %d problem(s), see Output Log"), *InName.ToString(), Problems.Num()));
+		}
 	}
 
 	return NewDT;
@@ -197,6 +255,9 @@ UObject* FJsonToAssetImporter::ImportDataTable(TSharedPtr<FJsonObject> JsonObjec
 
 UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags, UMaterialInstanceConstant* ExistingMI)
 {
+	// A brand new instance has no children to refresh; one we update or replace may
+	const bool bMayHaveChildren = ExistingMI || FindObject<UMaterialInstanceConstant>(InParent, *InName.ToString());
+
 	UMaterialInstanceConstant* NewMI = ExistingMI;
 	if (!NewMI)
 	{
@@ -242,11 +303,10 @@ UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> Js
 					LoadedParent = ParentMat;
 				}
 
-				// If the master material is empty, populate it with dummy nodes using the MI's properties!
-				if (ParentMat && ParentMat->GetEditorOnlyData()->ExpressionCollection.Expressions.Num() == 0)
+				// Give a dummy master every parameter this instance uses; later instances add the ones it still lacks
+				if (ParentMat && IsDummyMaster(ParentMat))
 				{
 					PopulateDummyMasterMaterial(ParentMat, Props);
-					ParentMat->MarkPackageDirty();
 				}
 
 				if (LoadedParent)
@@ -344,28 +404,23 @@ UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> Js
 
 	NewMI->PostEditChange();
 
-	RefreshInstancesOfMaterial(NewMI, false);
+	if (bMayHaveChildren)
+	{
+		RefreshInstancesOfMaterial(NewMI, false);
+	}
 
 	return NewMI;
 }
 
-UObject* FJsonToAssetImporter::ImportDataAsset(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags)
+UObject* FJsonToAssetImporter::ImportDataAsset(TSharedPtr<FJsonObject> JsonObject, UClass* AssetClass, UObject* InParent, FName InName, EObjectFlags Flags)
 {
-	FString AssetType = JsonObject->GetStringField(TEXT("Type"));
-	UClass* AssetClass = FindObject<UClass>(ANY_PACKAGE, *AssetType);
-	
-	if (!AssetClass)
-	{
-		UE_LOG(LogTemp, Error, TEXT("J2A: Could not find class %s for DataAsset."), *AssetType);
-		return nullptr;
-	}
-
 	UObject* NewAsset = NewObject<UObject>(InParent, AssetClass, InName, Flags);
 
+	// The converter stops at the first field it cannot read, so the fields after it keep their defaults
 	auto Props = JsonObject->GetObjectField(TEXT("Properties"));
-	if (Props.IsValid())
+	if (Props.IsValid() && !FJsonObjectConverter::JsonObjectToUStruct(Props.ToSharedRef(), AssetClass, NewAsset, 0, 0))
 	{
-		FJsonObjectConverter::JsonObjectToUStruct(Props.ToSharedRef(), AssetClass, NewAsset, 0, 0);
+		J2ANotifs::ShowNotification(FString::Printf(TEXT("DataAsset: '%s' is only partly filled, a field could not be read (see Output Log)"), *InName.ToString()));
 	}
 
 	return NewAsset;
@@ -488,13 +543,39 @@ bool FJsonToAssetImporter::RelinkInstanceParent(UMaterialInstanceConstant* Insta
 
 void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TSharedPtr<FJsonObject> Props, TSharedPtr<FJsonObject> CachedExpressionData)
 {
-	int32 NodeY = 0;
+	auto& Expressions = NewMat->GetEditorOnlyData()->ExpressionCollection.Expressions;
+	const int32 NumExisting = Expressions.Num();
+
+	// Place new nodes below what a populated dummy already has
+	int32 NodeY = 150 * NumExisting;
 	TArray<UMaterialExpression*> FinalNodes;
+
+	// When merging into a populated dummy, keep what already feeds BaseColor and skip parameters it has
+	UMaterialExpression* OldOutput = NewMat->GetEditorOnlyData()->BaseColor.Expression;
+	if (OldOutput && Expressions.Contains(OldOutput))
+	{
+		FinalNodes.Add(OldOutput);
+	}
+	const int32 NumSeeded = FinalNodes.Num();
+
+	TSet<FName> KnownParams;
+	for (UMaterialExpression* Expression : Expressions)
+	{
+		if (Expression && Expression->HasAParameterName())
+		{
+			KnownParams.Add(Expression->GetParameterName());
+		}
+	}
 
 	// Switches need both inputs connected to compile, so they share one constant
 	UMaterialExpressionConstant* SwitchInput = nullptr;
 	auto AddStaticSwitchNode = [&](FName ParamName, bool bDefaultValue)
 	{
+		if (KnownParams.Contains(ParamName))
+		{
+			return;
+		}
+
 		if (!SwitchInput)
 		{
 			SwitchInput = NewObject<UMaterialExpressionConstant>(NewMat);
@@ -525,6 +606,11 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 				FName ParamName = FName(*ParamInfo->GetStringField(TEXT("Name")));
 				float ParamValue = ParamObj->GetNumberField(TEXT("ParameterValue"));
 				
+				if (KnownParams.Contains(ParamName))
+				{
+					continue;
+				}
+
 				UMaterialExpressionScalarParameter* Node = NewObject<UMaterialExpressionScalarParameter>(NewMat);
 				Node->ParameterName = ParamName;
 				Node->DefaultValue = ParamValue;
@@ -544,6 +630,11 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 				FName ParamName = FName(*ParamInfo->GetStringField(TEXT("Name")));
 				auto ValObj = ParamObj->GetObjectField(TEXT("ParameterValue"));
 				
+				if (KnownParams.Contains(ParamName))
+				{
+					continue;
+				}
+
 				UMaterialExpressionVectorParameter* Node = NewObject<UMaterialExpressionVectorParameter>(NewMat);
 				Node->ParameterName = ParamName;
 				Node->DefaultValue = FLinearColor(
@@ -567,6 +658,11 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 				auto ParamInfo = ParamObj->GetObjectField(TEXT("ParameterInfo"));
 				FName ParamName = FName(*ParamInfo->GetStringField(TEXT("Name")));
 				
+				if (KnownParams.Contains(ParamName))
+				{
+					continue;
+				}
+
 				UMaterialExpressionTextureSampleParameter2D* Node = NewObject<UMaterialExpressionTextureSampleParameter2D>(NewMat);
 				Node->ParameterName = ParamName;
 				Node->MaterialExpressionEditorY = NodeY;
@@ -631,6 +727,10 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 					{
 						auto ParamObj = (*ParamSet)[i]->AsObject();
 						FName ParamName = FName(*ParamObj->GetStringField(TEXT("Name")));
+						if (KnownParams.Contains(ParamName))
+						{
+							continue;
+						}
 						TSharedPtr<FJsonValue> ValObj = (ValuesArray && ValuesArray->IsValidIndex(i)) ? (*ValuesArray)[i] : nullptr;
 						CreateNodeLambda(ParamName, ValObj);
 					}
@@ -694,7 +794,13 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 		});
 	}
 
-	int32 AddY = 0;
+	// The dummy already had everything, so leave it alone and skip a shader recompile
+	if (NumExisting > 0 && FinalNodes.Num() == NumSeeded)
+	{
+		return;
+	}
+
+	int32 AddY = 150 * NumExisting;
 	while (FinalNodes.Num() > 1)
 	{
 		UMaterialExpression* NodeA = FinalNodes[0];
@@ -718,8 +824,18 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 		NewMat->GetEditorOnlyData()->BaseColor.Expression = FinalNodes[0];
 	}
 
+	// A normal map on the default Color sampler fails to compile
+	for (UMaterialExpression* Expression : Expressions)
+	{
+		if (UMaterialExpressionTextureBase* TextureNode = Cast<UMaterialExpressionTextureBase>(Expression))
+		{
+			TextureNode->AutoSetSampleType();
+		}
+	}
+
 	NewMat->PreEditChange(nullptr);
 	NewMat->PostEditChange();
+	NewMat->MarkPackageDirty();
 }
 
 UTexture2D* FJsonToAssetImporter::TryCreateDummyTexture(const FString& InObjectPath)

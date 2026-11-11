@@ -5,10 +5,7 @@ public class J2A : ModuleRules
 	public J2A(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = ModuleRules.PCHUsageMode.UseExplicitOrSharedPCHs;
-		
-		PublicIncludePaths.AddRange(new string[] { });
-		PrivateIncludePaths.AddRange(new string[] { });
-			
+
 		PublicDependencyModuleNames.AddRange(
 			new string[]
 			{
@@ -27,15 +24,13 @@ public class J2A : ModuleRules
 				"AssetTools",
 				"Json",
 				"JsonUtilities",
-				"EditorStyle",
 				"ToolMenus",
 				"DesktopPlatform",
 				"ContentBrowser",
+				"ContentBrowserData",
 				"AssetRegistry",
 				"MaterialEditor"
 			}
 		);
-		
-		DynamicallyLoadedModuleNames.AddRange(new string[] { });
 	}
 }

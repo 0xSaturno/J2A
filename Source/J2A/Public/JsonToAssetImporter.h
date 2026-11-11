@@ -11,6 +11,11 @@ class J2A_API FJsonToAssetImporter
 {
 public:
 	/**
+	 * True if the JSON is an FModel export of a type J2A can build.
+	 */
+	static bool CanImportJson(const FString& JsonString);
+
+	/**
 	 * Parses an FModel JSON string and updates an existing UObject.
 	 */
 	static bool UpdateExistingAssetFromJson(UObject* ExistingAsset, const FString& JsonString);
@@ -34,10 +39,16 @@ public:
 	static bool RelinkInstanceParent(UMaterialInstanceConstant* Instance);
 
 private:
+	// The asset object of an FModel export, or null if the text is not one
+	static TSharedPtr<FJsonObject> ParseRootObject(const FString& JsonString);
+
+	// The class J2A builds for an FModel "Type", or null if unsupported
+	static UClass* ResolveAssetClass(const FString& AssetType);
+
 	// Specific asset importers
 	static UObject* ImportDataTable(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags);
 	static UObject* ImportMaterialInstance(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags, UMaterialInstanceConstant* ExistingMI = nullptr);
-	static UObject* ImportDataAsset(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags);
+	static UObject* ImportDataAsset(TSharedPtr<FJsonObject> JsonObject, UClass* AssetClass, UObject* InParent, FName InName, EObjectFlags Flags);
 	static UObject* ImportMasterMaterial(TSharedPtr<FJsonObject> JsonObject, UObject* InParent, FName InName, EObjectFlags Flags, UMaterial* ExistingMat = nullptr);
 
 	// Helper for generating dummy nodes

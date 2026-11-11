@@ -1,8 +1,10 @@
 <img src="https://i.imgur.com/NHL8p8L.png" title="" alt="J2A Banner" data-align="center">
 
-# J2A (JSON to Asset) Plugin for Unreal Engine 5
+# J2A (JSON to Asset) Plugin for Unreal Engine 5.3
 
-J2A is an Editor utility plugin designed to seamlessly import raw FModel JSON exports directly into Unreal Engine 5 as template assets. 
+J2A is an Editor utility plugin designed to seamlessly import raw FModel JSON exports directly into Unreal Engine 5.3 as template assets. 
+
+> **Engine version:** built and tested on Unreal Engine 5.3 only. Newer versions are untested and may need code corrections.
 
 With a focus on preserving hierarchies and visual data, it automates the tedious reconstruction of materials, instances, and data tables by translating raw JSON properties into their native UE counterparts.
 
@@ -10,19 +12,21 @@ With a focus on preserving hierarchies and visual data, it automates the tedious
 
 - **Drag-and-Drop Workflow**: Simply drag and drop FModel JSON files directly into the Content Browser, and J2A will parse and build the appropriate assets automatically.
 - **Context Menu Integration**: Right-click anywhere in the Content Browser and select "Import FModel JSON..." to import files into the active folder.
-- **Auto-Generating Master Materials**: Missing Master Material dependencies? If an imported Material Instance points to an unloaded Master Material, J2A dynamically recreates it, populating it with all the required dummy Parameter Nodes (Scalars, Vectors, Textures) and their default values.
+- **Auto-Generating Master Materials**: Missing Master Material dependencies? If an imported Material Instance points to an unloaded Master Material, J2A dynamically recreates it, populating it with all the required dummy Parameter Nodes (Scalars, Vectors, Textures, Static Switches) and their default values. Each further instance you import adds the parameters the dummy still lacks.
 - **Auto-Spawning Dummy Textures**: Unresolved texture parameters are automatically handled. J2A creates blank dummy textures in your project tree to ensure your instances remain intact and linked correctly.
 - **Robust Asset Support**: Fully supports importing:
   - `Material Instances`
   - `Master Materials` (Extracts `CachedExpressionData` to build functional node graphs)
   - `DataTables`
-  - `DataAssets`
+  - `DataAssets` (any `UDataAsset` class loaded in your project)
+
+  Any other FModel JSON type is not handled by J2A.
 
 ## Installation
 
 1. Download the latest compiled release zip from the **Releases** section.
 2. Extract the `J2A_Plugin` folder directly into your project's `Plugins/` directory (create the folder if it doesn't exist).
-3. Launch Unreal Engine and ensure the "J2A" plugin is enabled in your `Edit -> Plugins` menu.
+3. Launch Unreal Engine 5.3 and ensure the "J2A" plugin is enabled in your `Edit -> Plugins` menu.
 
 ## Usage
 
@@ -36,6 +40,12 @@ With a focus on preserving hierarchies and visual data, it automates the tedious
 1. Right-click inside any Content Browser folder.
 2. Select `JSON 2 Asset -> Import FModel JSON...`
 3. Select your `.json` file(s) from the dialog box.
+
+Both methods ask before overwriting an existing asset. Rows or fields that could not be read are reported in a notification and the Output Log.
+
+**Updating an existing asset**
+
+Right-click a Material or Material Instance and select `Update from JSON...`. The JSON must be of the same type as the asset, otherwise it is skipped.
 
 **Fixing instances after importing a Master Material**
 

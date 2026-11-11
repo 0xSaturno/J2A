@@ -2,12 +2,13 @@
 #include "ToolMenus.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
+#include "ContentBrowserItemPath.h"
+#include "AssetToolsModule.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/FileHelper.h"
 #include "JsonToAssetImporter.h"
-#include "AssetRegistry/AssetRegistryModule.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInstanceConstant.h"
 
@@ -91,19 +92,6 @@ void FJ2AModule::RegisterMenus()
 
 void FJ2AModule::OnImportJsonClicked()
 {
-	FString CurrentPath = "/Game";
-	FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
-	TArray<FString> SelectedPaths;
-	ContentBrowserModule.Get().GetSelectedPathViewFolders(SelectedPaths);
-	if (SelectedPaths.Num() > 0)
-	{
-		CurrentPath = SelectedPaths[0];
-		if (CurrentPath.StartsWith(TEXT("/All/")))
-		{
-			CurrentPath = CurrentPath.RightChop(4);
-		}
-	}
-
 	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
 	if (DesktopPlatform)
 	{
@@ -122,25 +110,11 @@ void FJ2AModule::OnImportJsonClicked()
 
 		if (bOpened && OutFilenames.Num() > 0)
 		{
-			for (const FString& Filename : OutFilenames)
-			{
-				FString FileContent;
-				if (FFileHelper::LoadFileToString(FileContent, *Filename))
-				{
-					FString BaseName = FPaths::GetBaseFilename(Filename);
-					
-					FString PackageName = CurrentPath + TEXT("/") + BaseName;
-					UPackage* Package = CreatePackage(*PackageName);
-
-					UObject* NewAsset = FJsonToAssetImporter::ImportJsonToAsset(FileContent, Package, *BaseName, RF_Public | RF_Standalone);
-					
-					if (NewAsset)
-					{
-						FAssetRegistryModule::AssetCreated(NewAsset);
-						NewAsset->MarkPackageDirty();
-					}
-				}
-			}
+			// Unreal's own import picks UJ2AFactory, asks before overwriting and reports failures
+			FContentBrowserModule& ContentBrowserModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+			const FContentBrowserItemPath CurrentPath = ContentBrowserModule.Get().GetCurrentPath();
+			FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get().ImportAssets(
+				OutFilenames, CurrentPath.HasInternalPath() ? CurrentPath.GetInternalPathString() : FString(TEXT("/Game")));
 		}
 	}
 }
@@ -181,7 +155,6 @@ void FJ2AModule::OnUpdateAssetClicked()
 					{
 						if (FJsonToAssetImporter::UpdateExistingAssetFromJson(Asset, FileContent))
 						{
-							FAssetRegistryModule::AssetCreated(Asset);
 							Asset->MarkPackageDirty();
 						}
 					}
