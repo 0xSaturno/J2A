@@ -2,6 +2,7 @@
 #include "Serialization/JsonSerializer.h"
 #include "Misc/MessageDialog.h"
 #include "Engine/DataTable.h"
+#include "Engine/Texture2D.h"
 #include "Engine/UserDefinedStruct.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "JsonObjectConverter.h"
@@ -12,11 +13,16 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionAdd.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
+#include "StaticParameterSet.h"
 #include "Factories/Texture2dFactoryNew.h"
 #include "IAssetTools.h"
 #include "AssetToolsModule.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "MaterialEditingLibrary.h"
+#include "Misc/PackageName.h"
 
 namespace J2ANotifs
 {
@@ -213,31 +219,40 @@ UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> Js
 					ObjectPath = ObjectPath.Left(DotPos);
 				}
 				
-				UMaterial* ParentMat = LoadObject<UMaterial>(nullptr, *ObjectPath, nullptr, LOAD_Quiet | LOAD_NoWarn);
-				
-				// Auto-generate the parent Master Material if it doesn't exist, using the MI's parameters!
-				if (!ParentMat)
+				UMaterialInterface* LoadedParent = LoadObject<UMaterialInterface>(nullptr, *ObjectPath, nullptr, LOAD_Quiet | LOAD_NoWarn);
+				UMaterial* ParentMat = Cast<UMaterial>(LoadedParent);
+
+				FString ParentClass;
+				(*ParentField)->TryGetStringField(TEXT("ObjectName"), ParentClass);
+				const FString ParentName = FPackageName::GetLongPackageAssetName(ObjectPath);
+
+				// A missing parent instance can't be replaced by a dummy master at the same path
+				if (!LoadedParent && ParentClass.StartsWith(TEXT("MaterialInstanceConstant")))
 				{
-					FString ParentName = FPaths::GetBaseFilename(ObjectPath);
+					J2ANotifs::ShowNotification(FString::Printf(TEXT("MaterialInstance: Import parent instance '%s' first"), *ParentName));
+				}
+				// Auto-generate the parent Master Material if it doesn't exist, using the MI's parameters!
+				else if (!LoadedParent)
+				{
 					J2ANotifs::ShowNotification(FString::Printf(TEXT("MaterialInstance: Missing Master dependency '%s'"), *ParentName));
-					
-					FString ParentPackagePath = FPaths::GetPath(ObjectPath);
-					UPackage* ParentPackage = CreatePackage(*ParentPackagePath);
+
+					UPackage* ParentPackage = CreatePackage(*ObjectPath);
 					ParentMat = NewObject<UMaterial>(ParentPackage, UMaterial::StaticClass(), *ParentName, RF_Public | RF_Standalone);
 					FAssetRegistryModule::AssetCreated(ParentMat);
+					LoadedParent = ParentMat;
 				}
 
-				if (ParentMat)
+				// If the master material is empty, populate it with dummy nodes using the MI's properties!
+				if (ParentMat && ParentMat->GetEditorOnlyData()->ExpressionCollection.Expressions.Num() == 0)
 				{
-					// If the master material is empty, populate it with dummy nodes using the MI's properties!
-					if (ParentMat->GetEditorOnlyData()->ExpressionCollection.Expressions.Num() == 0)
-					{
-						PopulateDummyMasterMaterial(ParentMat, Props);
-						ParentMat->MarkPackageDirty();
-					}
-					
-					NewMI->SetParentEditorOnly(ParentMat);
-					
+					PopulateDummyMasterMaterial(ParentMat, Props);
+					ParentMat->MarkPackageDirty();
+				}
+
+				if (LoadedParent)
+				{
+					NewMI->SetParentEditorOnly(LoadedParent);
+
 					// Force the MI to update its parameter cache so the overrides will actually stick!
 					NewMI->PreEditChange(nullptr);
 					NewMI->PostEditChange();
@@ -298,9 +313,38 @@ UObject* FJsonToAssetImporter::ImportMaterialInstance(TSharedPtr<FJsonObject> Js
 				}
 			}
 		}
+
+		const TSharedPtr<FJsonObject>* StaticParams;
+		const TArray<TSharedPtr<FJsonValue>>* StaticSwitches = nullptr;
+		if (Props->TryGetObjectField(TEXT("StaticParametersRuntime"), StaticParams) && StaticParams->IsValid()
+			&& (*StaticParams)->TryGetArrayField(TEXT("StaticSwitchParameters"), StaticSwitches))
+		{
+			FStaticParameterSet StaticParameters;
+			NewMI->GetStaticParameterValues(StaticParameters);
+
+			for (auto& Elem : *StaticSwitches)
+			{
+				auto ParamObj = Elem->AsObject();
+				auto ParamInfo = ParamObj->GetObjectField(TEXT("ParameterInfo"));
+				FName ParamName = FName(*ParamInfo->GetStringField(TEXT("Name")));
+
+				for (FStaticSwitchParameter& Switch : StaticParameters.StaticSwitchParameters)
+				{
+					if (Switch.ParameterInfo.Name == ParamName)
+					{
+						Switch.Value = ParamObj->GetBoolField(TEXT("Value"));
+						Switch.bOverride = true;
+					}
+				}
+			}
+
+			NewMI->UpdateStaticPermutation(StaticParameters);
+		}
 	}
-	
+
 	NewMI->PostEditChange();
+
+	RefreshInstancesOfMaterial(NewMI, false);
 
 	return NewMI;
 }
@@ -332,9 +376,20 @@ UObject* FJsonToAssetImporter::ImportMasterMaterial(TSharedPtr<FJsonObject> Json
 	UMaterial* NewMat = ExistingMat;
 	if (!NewMat)
 	{
+		// Reuse a dummy already at this path so instances pointing at it stay linked
+		const FString ExistingPath = InParent->GetPathName() + TEXT(".") + InName.ToString();
+		NewMat = LoadObject<UMaterial>(nullptr, *ExistingPath, nullptr, LOAD_Quiet | LOAD_NoWarn);
+	}
+
+	if (NewMat)
+	{
+		UMaterialEditingLibrary::DeleteAllMaterialExpressions(NewMat);
+	}
+	else
+	{
 		NewMat = NewObject<UMaterial>(InParent, UMaterial::StaticClass(), InName, Flags);
 	}
-	
+
 	auto Props = JsonObject->GetObjectField(TEXT("Properties"));
 	
 	TSharedPtr<FJsonObject> CachedExpressionData;
@@ -349,13 +404,115 @@ UObject* FJsonToAssetImporter::ImportMasterMaterial(TSharedPtr<FJsonObject> Json
 		PopulateDummyMasterMaterial(NewMat, Props, CachedExpressionData);
 	}
 
+	RefreshInstancesOfMaterial(NewMat);
+
 	return NewMat;
+}
+
+int32 FJsonToAssetImporter::RefreshInstancesOfMaterial(UMaterialInterface* Parent, bool bNotifyIfNone)
+{
+	if (!Parent)
+	{
+		return 0;
+	}
+
+	const FString MasterPath = Parent->GetPathName();
+	const FString MasterFolder = FPackageName::GetLongPackagePath(Parent->GetOutermost()->GetName());
+	const FString MisplacedPath = MasterFolder + TEXT(".") + Parent->GetName();
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	TArray<FAssetData> InstanceAssets;
+	AssetRegistryModule.Get().GetAssetsByClass(UMaterialInstanceConstant::StaticClass()->GetClassPathName(), InstanceAssets, true);
+
+	int32 NumRefreshed = 0;
+	for (const FAssetData& Data : InstanceAssets)
+	{
+		FString ParentTag;
+		if (!Data.GetTagValue(TEXT("Parent"), ParentTag))
+		{
+			continue;
+		}
+
+		const FString ParentPath = FPackageName::ExportTextPathToObjectPath(ParentTag);
+		const bool bMisplaced = ParentPath == MisplacedPath;
+		if (!bMisplaced && ParentPath != MasterPath)
+		{
+			continue;
+		}
+
+		UMaterialInstanceConstant* Instance = Cast<UMaterialInstanceConstant>(Data.GetAsset());
+		if (!Instance || Instance == Parent)
+		{
+			continue;
+		}
+
+		if (bMisplaced)
+		{
+			Instance->SetParentEditorOnly(Parent);
+		}
+
+		UMaterialEditingLibrary::UpdateMaterialInstance(Instance);
+		Instance->MarkPackageDirty();
+		++NumRefreshed;
+	}
+
+	if (NumRefreshed > 0 || bNotifyIfNone)
+	{
+		J2ANotifs::ShowNotification(FString::Printf(TEXT("MasterMaterials: Refreshed %d instance(s) of '%s'"), NumRefreshed, *Parent->GetName()));
+	}
+	return NumRefreshed;
+}
+
+bool FJsonToAssetImporter::RelinkInstanceParent(UMaterialInstanceConstant* Instance)
+{
+	if (!Instance || !Instance->Parent)
+	{
+		return false;
+	}
+
+	// A misplaced dummy lives at /Folder.Name, the real parent at /Folder/Name.Name
+	UMaterialInterface* CurrentParent = Instance->Parent;
+	const FString ParentName = CurrentParent->GetName();
+	const FString ExpectedPath = CurrentParent->GetOutermost()->GetName() / ParentName + TEXT(".") + ParentName;
+
+	if (UMaterialInterface* RealParent = LoadObject<UMaterialInterface>(nullptr, *ExpectedPath, nullptr, LOAD_Quiet | LOAD_NoWarn))
+	{
+		Instance->SetParentEditorOnly(RealParent);
+		J2ANotifs::ShowNotification(FString::Printf(TEXT("MaterialInstance: Relinked '%s' to '%s'"), *Instance->GetName(), *ExpectedPath));
+	}
+
+	UMaterialEditingLibrary::UpdateMaterialInstance(Instance);
+	Instance->MarkPackageDirty();
+	return true;
 }
 
 void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TSharedPtr<FJsonObject> Props, TSharedPtr<FJsonObject> CachedExpressionData)
 {
 	int32 NodeY = 0;
 	TArray<UMaterialExpression*> FinalNodes;
+
+	// Switches need both inputs connected to compile, so they share one constant
+	UMaterialExpressionConstant* SwitchInput = nullptr;
+	auto AddStaticSwitchNode = [&](FName ParamName, bool bDefaultValue)
+	{
+		if (!SwitchInput)
+		{
+			SwitchInput = NewObject<UMaterialExpressionConstant>(NewMat);
+			SwitchInput->MaterialExpressionEditorX = -250;
+			SwitchInput->MaterialExpressionEditorY = NodeY;
+			NewMat->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(SwitchInput);
+		}
+
+		UMaterialExpressionStaticSwitchParameter* Node = NewObject<UMaterialExpressionStaticSwitchParameter>(NewMat);
+		Node->ParameterName = ParamName;
+		Node->DefaultValue = bDefaultValue;
+		Node->A.Expression = SwitchInput;
+		Node->B.Expression = SwitchInput;
+		Node->MaterialExpressionEditorY = NodeY;
+		NewMat->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(Node);
+		FinalNodes.Add(Node);
+		NodeY += 150;
+	};
 
 	if (Props.IsValid())
 	{
@@ -432,6 +589,20 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 				NodeY += 150;
 			}
 		}
+
+		// A dummy master needs the instance's switches or the overrides have nothing to apply to
+		const TSharedPtr<FJsonObject>* StaticParams;
+		const TArray<TSharedPtr<FJsonValue>>* StaticSwitches = nullptr;
+		if (Props->TryGetObjectField(TEXT("StaticParametersRuntime"), StaticParams) && StaticParams->IsValid()
+			&& (*StaticParams)->TryGetArrayField(TEXT("StaticSwitchParameters"), StaticSwitches))
+		{
+			for (auto& Elem : *StaticSwitches)
+			{
+				auto ParamObj = Elem->AsObject();
+				auto ParamInfo = ParamObj->GetObjectField(TEXT("ParameterInfo"));
+				AddStaticSwitchNode(FName(*ParamInfo->GetStringField(TEXT("Name"))), false);
+			}
+		}
 	}
 
 	if (CachedExpressionData.IsValid())
@@ -444,6 +615,9 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 
 		const TArray<TSharedPtr<FJsonValue>>* TextureValues = nullptr;
 		CachedExpressionData->TryGetArrayField(TEXT("TextureValues"), TextureValues);
+
+		const TArray<TSharedPtr<FJsonValue>>* StaticSwitchValues = nullptr;
+		CachedExpressionData->TryGetArrayField(TEXT("StaticSwitchValues"), StaticSwitchValues);
 
 		auto TryAddParameters = [&](const FString& KeyName, const TArray<TSharedPtr<FJsonValue>>* ValuesArray, auto CreateNodeLambda)
 		{
@@ -513,6 +687,10 @@ void FJsonToAssetImporter::PopulateDummyMasterMaterial(UMaterial* NewMat, TShare
 			NewMat->GetEditorOnlyData()->ExpressionCollection.Expressions.Add(Node);
 			FinalNodes.Add(Node);
 			NodeY += 150;
+		});
+
+		TryAddParameters(TEXT("RuntimeEntries[7]"), StaticSwitchValues, [&](FName ParamName, TSharedPtr<FJsonValue> ValObj) {
+			AddStaticSwitchNode(ParamName, ValObj.IsValid() && ValObj->Type == EJson::Boolean && ValObj->AsBool());
 		});
 	}
 

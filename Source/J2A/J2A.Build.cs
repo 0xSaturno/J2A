@@ -31,7 +31,8 @@ public class J2A : ModuleRules
 				"ToolMenus",
 				"DesktopPlatform",
 				"ContentBrowser",
-				"AssetRegistry"
+				"AssetRegistry",
+				"MaterialEditor"
 			}
 		);
 		
